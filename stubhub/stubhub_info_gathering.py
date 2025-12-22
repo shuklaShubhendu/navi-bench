@@ -25,24 +25,78 @@ from navi_bench.dates import initialize_placeholder_map, initialize_user_metadat
 
 class SingleCandidateQuery(TypedDict, total=False):
     """Single event query with specific criteria."""
+    # Event Search Filters
     event_name: str | None
+    event_category: str | None  # concerts, sports, theater, comedy, festivals
     date: str | None
     time: str | None
     venue: str | None
     city: str | None
+    
+    # Ticket Listing Filters
     min_tickets: int | None
     max_price: float | None
+    min_price: float | None
+    section: str | None
+    zone: str | None
+    row: str | None
+    aisle_seat: bool | None
+    
+    # Ticket Type Filters
+    ticket_type: str | None  # standard, vip, premium, general_admission, standing, seated
+    parking_only: bool | None
+    accessible_seating: bool | None
+    
+    # Delivery Filters
+    delivery_type: str | None  # instant_download, electronic, mobile_transfer, physical, will_call
+    instant_download_only: bool | None
+    
+    # Special Filters
+    vip_packages: bool | None
+    includes_extras: bool | None
+    price_with_fees: bool | None
+    
+    # Sorting
+    sort_order: str | None  # recommended, price_low_to_high, price_high_to_low, best_value, best_seats
 
 
 class MultiCandidateQuery(TypedDict, total=False):
     """Multi-option event query allowing alternatives."""
+    # Event Search Filters
     event_names: list[str] | None
+    event_categories: list[str] | None  # concerts, sports, theater, comedy, festivals
     dates: list[str] | None
+    date_range: str | None  # today, this-weekend, this-week, this-month
     times: list[str] | None
     venues: list[str] | None
     cities: list[str] | None
+    
+    # Ticket Listing Filters
     min_tickets: int | None
+    max_tickets: int | None
     max_price: float | None
+    min_price: float | None
+    sections: list[str] | None
+    zones: list[str] | None  # Lower Level, Upper Deck, Floor, etc.
+    rows: list[str] | None
+    aisle_seat: bool | None
+    
+    # Ticket Type Filters
+    ticket_types: list[str] | None  # standard, vip, premium, general_admission, standing, seated
+    parking_only: bool | None
+    accessible_seating: bool | None
+    
+    # Delivery Filters
+    delivery_types: list[str] | None  # instant_download, electronic, mobile_transfer, physical, will_call
+    instant_download_only: bool | None
+    
+    # Special Filters
+    vip_packages: bool | None
+    includes_extras: bool | None
+    price_with_fees: bool | None
+    
+    # Sorting
+    sort_order: str | None  # recommended, price_low_to_high, price_high_to_low, best_value, best_seats
 
 
 class InputDict(TypedDict, total=False):
@@ -51,17 +105,61 @@ class InputDict(TypedDict, total=False):
 
 
 class InfoDict(TypedDict, total=False):
-    """Scraped event information from JavaScript."""
+    """Scraped event information from JavaScript - comprehensive."""
+    # Basic Info
     url: str
     eventName: str
+    eventCategory: str  # concerts, sports, theater, comedy, festivals
+    
+    # Date/Time
     date: str
     time: str
+    dateRange: str  # today, this-weekend, this-week, this-month
+    
+    # Location
     venue: str
     city: str
+    state: str
+    country: str
+    
+    # Ticket Details
     section: str
+    zone: str
+    row: str
+    seat: str
+    aisleSeay: bool
+    
+    # Pricing
     price: float
+    priceWithFees: float
+    faceValue: float
+    
+    # Quantity
     ticketCount: int
-    info: str
+    availableQuantities: list[int]
+    
+    # Ticket Type
+    ticketType: str  # standard, vip, premium, general_admission
+    isVIP: bool
+    isAccessible: bool
+    isParkingPass: bool
+    
+    # Delivery
+    deliveryType: str  # instant_download, electronic, mobile_transfer, physical, will_call
+    isInstantDownload: bool
+    
+    # Extras
+    includesExtras: bool
+    extraDetails: str
+    
+    # Availability Status
+    info: str  # available, sold_out, limited, waitlist, presale
+    totalListings: int
+    
+    # Seller Info
+    sellerRating: float
+    sellerType: str  # individual, professional
+
 
 
 class FinalResult(BaseModel):
@@ -160,43 +258,152 @@ class StubHubInfoGathering(BaseMetric):
     def _check_multi_candidate_query(
         cls, query: MultiCandidateQuery, info: InfoDict, evidences: list[InfoDict]
     ) -> bool:
-        """Check if the multi-candidate query matches the info."""
-        # Check event names using SUBSTRING matching (any query term in event name)
+        """Check if the multi-candidate query matches the info - comprehensive filter matching."""
+        
+        # ========== EVENT SEARCH FILTERS ==========
+        
+        # Check event names using SUBSTRING matching
         if query_names := query.get("event_names"):
             query_names = [name.lower() for name in query_names]
             event_name = info.get("eventName", "").lower()
-            # Check if ANY query term is contained in the event name
             if not any(qname in event_name for qname in query_names):
+                return False
+
+        # Check event categories
+        if query_categories := query.get("event_categories"):
+            query_categories = [c.lower() for c in query_categories]
+            event_category = info.get("eventCategory", "").lower()
+            if event_category and not any(c in event_category for c in query_categories):
                 return False
 
         # Check venues using SUBSTRING matching
         if venues := query.get("venues"):
             venues = [v.lower() for v in venues]
             venue = info.get("venue", "").lower()
-            if not any(v in venue for v in venues):
+            if venue and not any(v in venue for v in venues):
                 return False
 
         # Check cities using SUBSTRING matching
         if cities := query.get("cities"):
             cities = [c.lower() for c in cities]
             city = info.get("city", "").lower()
-            if not any(c in city for c in cities):
+            if city and not any(c in city for c in cities):
                 return False
 
-
+        # ========== TICKET LISTING FILTERS ==========
+        
+        # Check minimum tickets
         if min_tickets := query.get("min_tickets"):
-            if info.get("ticketCount", 0) < min_tickets:
+            ticket_count = info.get("ticketCount", 0)
+            if ticket_count and ticket_count < min_tickets:
                 return False
 
+        # Check maximum tickets
+        if max_tickets := query.get("max_tickets"):
+            ticket_count = info.get("ticketCount", 0)
+            if ticket_count and ticket_count > max_tickets:
+                return False
+
+        # Check maximum price
         if max_price := query.get("max_price"):
-            if info.get("price", float('inf')) > max_price:
+            # Check both regular price and price with fees
+            price = info.get("price") or info.get("priceWithFees")
+            if price is not None and price > max_price:
                 return False
 
+        # Check minimum price
+        if min_price := query.get("min_price"):
+            price = info.get("price") or info.get("priceWithFees")
+            if price is not None and price < min_price:
+                return False
+
+        # Check sections using SUBSTRING matching
+        if sections := query.get("sections"):
+            sections = [s.lower() for s in sections]
+            section = info.get("section", "").lower()
+            if section and not any(s in section for s in sections):
+                return False
+
+        # Check zones using SUBSTRING matching
+        if zones := query.get("zones"):
+            zones = [z.lower() for z in zones]
+            zone = info.get("zone", "").lower()
+            if zone and not any(z in zone for z in zones):
+                return False
+
+        # Check rows using SUBSTRING matching
+        if rows := query.get("rows"):
+            rows = [r.lower() for r in rows]
+            row = info.get("row", "").lower()
+            if row and not any(r in row for r in rows):
+                return False
+
+        # Check aisle seat requirement
+        if query.get("aisle_seat") is True:
+            if not info.get("aisleSeat", False):
+                return False
+
+        # ========== TICKET TYPE FILTERS ==========
+        
+        # Check ticket types
+        if ticket_types := query.get("ticket_types"):
+            ticket_types = [t.lower() for t in ticket_types]
+            ticket_type = info.get("ticketType", "").lower()
+            if ticket_type and not any(t in ticket_type for t in ticket_types):
+                return False
+
+        # Check parking only filter
+        if query.get("parking_only") is True:
+            if not info.get("isParkingPass", False):
+                return False
+
+        # Check accessible seating requirement
+        if query.get("accessible_seating") is True:
+            if not info.get("isAccessible", False):
+                return False
+
+        # ========== DELIVERY FILTERS ==========
+        
+        # Check delivery types
+        if delivery_types := query.get("delivery_types"):
+            delivery_types = [d.lower() for d in delivery_types]
+            delivery_type = info.get("deliveryType", "").lower()
+            if delivery_type and not any(d in delivery_type for d in delivery_types):
+                return False
+
+        # Check instant download only
+        if query.get("instant_download_only") is True:
+            if not info.get("isInstantDownload", False):
+                return False
+
+        # ========== SPECIAL FILTERS ==========
+        
+        # Check VIP packages
+        if query.get("vip_packages") is True:
+            if not info.get("isVIP", False):
+                return False
+
+        # Check includes extras
+        if query.get("includes_extras") is True:
+            if not info.get("includesExtras", False):
+                return False
+
+        # ========== DATE/TIME FILTERS ==========
+        
         query_dates = query.get("dates")
         query_times = query.get("times")
+        query_date_range = query.get("date_range")
 
         available_info = info.get("info", "").lower()
 
+        # Handle date range (today, this-weekend, this-week, this-month)
+        if query_date_range:
+            info_date_range = info.get("dateRange", "").lower()
+            if info_date_range and query_date_range.lower() not in info_date_range:
+                # If no match on date range text, skip this check
+                pass
+
+        # Handle sold out / unavailable events
         if "sold_out" in available_info or "unavailable" in available_info:
             if query_dates:
                 if info.get("date") in query_dates:
@@ -208,6 +415,7 @@ class StubHubInfoGathering(BaseMetric):
                     return False
             return False
         else:
+            # Event is available - check date/time match
             if query_dates:
                 if info.get("date") not in query_dates:
                     return False
@@ -215,6 +423,7 @@ class StubHubInfoGathering(BaseMetric):
                 if info.get("time") not in query_times:
                     return False
             return True
+
 
     @classmethod
     def _check_single_candidate_query(cls, query: SingleCandidateQuery, info: InfoDict) -> bool:
