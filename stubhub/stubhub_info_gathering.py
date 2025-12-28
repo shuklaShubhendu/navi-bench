@@ -58,6 +58,9 @@ class SingleCandidateQuery(TypedDict, total=False):
     
     # Sorting
     sort_order: str | None  # recommended, price_low_to_high, price_high_to_low, best_value, best_seats
+    
+    # Availability (NEW: if False, sold-out events still count as matches)
+    require_available: bool | None  # Default False - agent gets credit even if event is sold out
 
 
 class MultiCandidateQuery(TypedDict, total=False):
@@ -65,6 +68,7 @@ class MultiCandidateQuery(TypedDict, total=False):
     # Event Search Filters
     event_names: list[str] | None
     event_categories: list[str] | None  # concerts, sports, theater, comedy, festivals
+    domain: list[str] | None  # Alias for event_categories (concerts, sports, theater)
     dates: list[str] | None
     date_range: str | None  # today, this-weekend, this-week, this-month
     times: list[str] | None
@@ -74,8 +78,10 @@ class MultiCandidateQuery(TypedDict, total=False):
     # Ticket Listing Filters
     min_tickets: int | None
     max_tickets: int | None
+    ticket_quantities: list[int] | None  # Exact quantities: [2] means exactly 2 tickets
     max_price: float | None
     min_price: float | None
+    currency: str | None  # USD, INR, EUR, GBP - for currency-aware matching
     sections: list[str] | None
     zones: list[str] | None  # Lower Level, Upper Deck, Floor, etc.
     rows: list[str] | None
@@ -97,6 +103,23 @@ class MultiCandidateQuery(TypedDict, total=False):
     
     # Sorting
     sort_order: str | None  # recommended, price_low_to_high, price_high_to_low, best_value, best_seats
+    
+    # Availability (NEW: if False, sold-out events still count as matches)
+    require_available: bool | None  # Default False - agent gets credit even if event is sold out
+    
+    # URL-based verification (verify agent applied correct filters via URL)
+    url_sections: list[str] | None  # Verify agent clicked correct map section(s)
+    url_quantity: int | None  # Verify agent set correct ticket quantity
+    url_ticket_classes: list[str] | None  # Verify agent selected correct ticket class/zone
+    
+    # Auth requirement
+    require_login: bool | None  # Task requires logged-in state
+    
+    # Page type requirement (can be single string or list of acceptable types)
+    require_page_type: str | list[str] | None  # event_listing, event_modal, search_results, checkout, etc.
+    
+    # Availability status filter
+    availability_statuses: list[str] | None  # available, presale, limited, sold_out, waitlist
 
 
 class InputDict(TypedDict, total=False):
@@ -159,6 +182,51 @@ class InfoDict(TypedDict, total=False):
     # Seller Info
     sellerRating: float
     sellerType: str  # individual, professional
+    
+    # URL Filter State (scraped from URL params)
+    urlSections: list[str]  # Section IDs from sections= param
+    urlQuantity: int  # Quantity from quantity= param
+    urlTicketClasses: list[str]  # Ticket class IDs from ticketClasses= param
+    urlListingId: str  # Specific listing from listingId= param
+    urlRows: list[str]  # Row filters from rows= param
+    urlSeatTypes: list[str]  # Seat type filters from seatTypes= param
+    urlMinPrice: float  # Min price filter from URL
+    urlMaxPrice: float  # Max price filter from URL
+    urlSort: str  # Sort order from URL
+    
+    # Page Metadata
+    loginStatus: str  # logged_in, logged_out, unknown
+    pageType: str  # event_listing, search_results, checkout, home, other
+    currency: str  # USD, INR, EUR, GBP
+    parsedTime: str  # Normalized time in HH:MM format
+    eventId: str  # Event ID extracted from URL
+    
+    # Price Classification
+    priceTier: str  # budget, mid, premium, luxury
+    
+    # Row and Seat Info
+    extractedRow: str  # Row number/letter extracted from text
+    extractedSeats: str  # Seat numbers extracted from text
+    
+    # Additional Flags
+    isResale: bool  # True if resale ticket
+    faceValue: float  # Face value of ticket if shown
+    ticketsTogether: bool  # True if seats are consecutive
+    isPresale: bool  # True if presale event
+    
+    # Gap-Bridging Fields
+    recommendedToggleOn: bool  # True if Recommended toggle is ON
+    filterPanelState: dict  # {isOpen, hasActiveFilters, activeFilterCount, hasClearButton}
+    loadingState: dict  # {isLoading, spinnerCount, noResults}
+    obstructedView: bool  # True if obstructed view, False if clear view
+    ageRestriction: str  # 21+, 18+, all_ages, restricted
+    listingAgeHours: int  # Listing age in hours
+    isQuickPick: bool  # True if featured/quick pick listing
+    dealRating: str  # best_value, fair, expensive
+    viewQuality: float  # View quality 0-100 scale
+    
+    # Availability Status (detected from page content)
+    availabilityStatus: str  # available, sold_out, presale, waitlist, limited, cancelled, rescheduled
 
 
 
@@ -276,6 +344,13 @@ class StubHubInfoGathering(BaseMetric):
             if event_category and not any(c in event_category for c in query_categories):
                 return False
 
+        # Check domain (alias for event_categories)
+        if query_domain := query.get("domain"):
+            query_domain = [d.lower() for d in query_domain]
+            event_category = info.get("eventCategory", "").lower()
+            if event_category and not any(d in event_category for d in query_domain):
+                return False
+
         # Check venues using SUBSTRING matching
         if venues := query.get("venues"):
             venues = [v.lower() for v in venues]
@@ -284,10 +359,14 @@ class StubHubInfoGathering(BaseMetric):
                 return False
 
         # Check cities using SUBSTRING matching
+        # IMPORTANT: If query requires cities, info MUST have a city to match
         if cities := query.get("cities"):
             cities = [c.lower() for c in cities]
-            city = info.get("city", "").lower()
-            if city and not any(c in city for c in cities):
+            city = (info.get("city") or "").lower()  # Handle None values
+            # If no city in info, it can't match the cities filter
+            if not city:
+                return False  # Must have city to match cities query
+            if not any(c in city for c in cities):
                 return False
 
         # ========== TICKET LISTING FILTERS ==========
@@ -302,6 +381,12 @@ class StubHubInfoGathering(BaseMetric):
         if max_tickets := query.get("max_tickets"):
             ticket_count = info.get("ticketCount", 0)
             if ticket_count and ticket_count > max_tickets:
+                return False
+
+        # Check exact ticket quantities (e.g., [2] means exactly 2 tickets)
+        if ticket_quantities := query.get("ticket_quantities"):
+            ticket_count = info.get("ticketCount", 0)
+            if ticket_count and ticket_count not in ticket_quantities:
                 return False
 
         # Check maximum price
@@ -388,11 +473,62 @@ class StubHubInfoGathering(BaseMetric):
             if not info.get("includesExtras", False):
                 return False
 
+        # ========== URL-BASED VERIFICATION (NEW) ==========
+        # Verify agent applied correct filters via URL parameters
+        
+        # Check URL sections (verify agent clicked correct map section)
+        if url_sections := query.get("url_sections"):
+            info_url_sections = info.get("urlSections", [])
+            # At least one required section must be in URL
+            if info_url_sections and not any(s in info_url_sections for s in url_sections):
+                return False
+        
+        # Check URL quantity (verify agent set correct ticket quantity)
+        if url_quantity := query.get("url_quantity"):
+            info_url_quantity = info.get("urlQuantity")
+            if info_url_quantity and info_url_quantity != url_quantity:
+                return False
+        
+        # Check URL ticket classes/zones
+        if url_ticket_classes := query.get("url_ticket_classes"):
+            info_url_classes = info.get("urlTicketClasses", [])
+            if info_url_classes and not any(c in info_url_classes for c in url_ticket_classes):
+                return False
+
+        # ========== AUTH & PAGE TYPE (NEW) ==========
+        
+        # Check login requirement
+        if query.get("require_login") is True:
+            login_status = info.get("loginStatus", "unknown")
+            if login_status == "logged_out":
+                return False
+        
+        # Check page type requirement (can be single string or list of acceptable types)
+        if require_page_type := query.get("require_page_type"):
+            page_type = info.get("pageType", "")
+            if page_type:
+                # Convert to list if single string
+                acceptable_types = require_page_type if isinstance(require_page_type, list) else [require_page_type]
+                if page_type not in acceptable_types:
+                    return False
+
+        # ========== AVAILABILITY STATUS FILTER (NEW) ==========
+        
+        # Check availability statuses
+        if availability_statuses := query.get("availability_statuses"):
+            availability_statuses = [s.lower() for s in availability_statuses]
+            info_availability = info.get("availabilityStatus", info.get("info", "")).lower()
+            if info_availability and not any(s in info_availability for s in availability_statuses):
+                return False
+
         # ========== DATE/TIME FILTERS ==========
         
         query_dates = query.get("dates")
         query_times = query.get("times")
         query_date_range = query.get("date_range")
+        
+        # NEW: Check if availability is required (default: False)
+        require_available = query.get("require_available", False)
 
         available_info = info.get("info", "").lower()
 
@@ -403,17 +539,33 @@ class StubHubInfoGathering(BaseMetric):
                 # If no match on date range text, skip this check
                 pass
 
-        # Handle sold out / unavailable events
-        if "sold_out" in available_info or "unavailable" in available_info:
-            if query_dates:
-                if info.get("date") in query_dates:
-                    evidences.append(info)
-                    return False
-            if query_times:
-                if info.get("time") in query_times:
-                    evidences.append(info)
-                    return False
-            return False
+        # Check if event is sold out / unavailable
+        is_sold_out = "sold_out" in available_info or "unavailable" in available_info or "get notified" in available_info
+        
+        # IMPORTANT: If require_available is False (default), sold-out events STILL count as matches!
+        # This ensures the agent gets credit for finding the correct event, even if tickets aren't available.
+        if is_sold_out:
+            if require_available:
+                # User explicitly requires available tickets - reject sold-out events
+                if query_dates:
+                    if info.get("date") in query_dates:
+                        evidences.append(info)
+                        return False
+                if query_times:
+                    if info.get("time") in query_times:
+                        evidences.append(info)
+                        return False
+                return False
+            else:
+                # require_available is False (default) - ACCEPT sold-out events as valid matches!
+                # Agent found the correct event, so they get full credit
+                if query_dates:
+                    if info.get("date") not in query_dates:
+                        return False
+                if query_times:
+                    if info.get("time") not in query_times:
+                        return False
+                return True  # Success! Event matches even though it's sold out
         else:
             # Event is available - check date/time match
             if query_dates:

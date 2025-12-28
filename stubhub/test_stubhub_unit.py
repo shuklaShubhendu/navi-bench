@@ -199,6 +199,127 @@ class TestMatchingLogic:
         assert StubHubInfoGathering._check_multi_candidate_query(query, info_over, []) == False
 
 
+class TestUrlBasedVerification:
+    """Test URL-based filter verification logic."""
+    
+    def test_url_section_matching(self):
+        """Test URL section verification (agent clicked correct map section)."""
+        query = {
+            "event_names": ["lakers"],
+            "url_sections": ["1132936", "1132937"]  # Expected section IDs
+        }
+        info_match = {"eventName": "lakers", "urlSections": ["1132936"]}
+        info_no_match = {"eventName": "lakers", "urlSections": ["999999"]}
+        info_empty = {"eventName": "lakers", "urlSections": []}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_match, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_no_match, []) == False
+        # Empty URL sections should pass (filter not applied by agent)
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_empty, []) == True
+    
+    def test_url_quantity_matching(self):
+        """Test URL quantity verification (agent set correct ticket count)."""
+        query = {
+            "event_names": ["lakers"],
+            "url_quantity": 4
+        }
+        info_match = {"eventName": "lakers", "urlQuantity": 4}
+        info_no_match = {"eventName": "lakers", "urlQuantity": 2}
+        info_none = {"eventName": "lakers", "urlQuantity": None}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_match, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_no_match, []) == False
+        # No URL quantity should pass
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_none, []) == True
+    
+    def test_url_ticket_class_matching(self):
+        """Test URL ticket class/zone verification."""
+        query = {
+            "event_names": ["lakers"],
+            "url_ticket_classes": ["1679", "1680"]
+        }
+        info_match = {"eventName": "lakers", "urlTicketClasses": ["1679"]}
+        info_no_match = {"eventName": "lakers", "urlTicketClasses": ["9999"]}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_match, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_no_match, []) == False
+
+
+class TestAuthAndPageType:
+    """Test authentication and page type verification."""
+    
+    def test_require_login(self):
+        """Test login requirement verification."""
+        query = {
+            "event_names": ["lakers"],
+            "require_login": True
+        }
+        info_logged_in = {"eventName": "lakers", "loginStatus": "logged_in"}
+        info_logged_out = {"eventName": "lakers", "loginStatus": "logged_out"}
+        info_unknown = {"eventName": "lakers", "loginStatus": "unknown"}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_logged_in, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_logged_out, []) == False
+        # Unknown login status should pass (no definitive logged_out)
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_unknown, []) == True
+    
+    def test_require_page_type(self):
+        """Test page type requirement verification."""
+        query = {
+            "event_names": ["lakers"],
+            "require_page_type": "event_listing"
+        }
+        info_match = {"eventName": "lakers", "pageType": "event_listing"}
+        info_no_match = {"eventName": "lakers", "pageType": "search_results"}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_match, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_no_match, []) == False
+
+
+class TestAvailabilityStatus:
+    """Test availability status filtering."""
+    
+    def test_availability_status_filter(self):
+        """Test availability status filtering."""
+        query = {
+            "event_names": ["lakers"],
+            "availability_statuses": ["available", "limited"]
+        }
+        info_available = {"eventName": "lakers", "availabilityStatus": "available"}
+        info_limited = {"eventName": "lakers", "availabilityStatus": "limited"}
+        info_sold_out = {"eventName": "lakers", "availabilityStatus": "sold_out"}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_available, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_limited, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_sold_out, []) == False
+    
+    def test_ticket_quantities_exact_match(self):
+        """Test exact ticket quantity matching."""
+        query = {
+            "event_names": ["lakers"],
+            "ticket_quantities": [2, 4]  # Accept exactly 2 or 4 tickets
+        }
+        info_match_2 = {"eventName": "lakers", "ticketCount": 2}
+        info_match_4 = {"eventName": "lakers", "ticketCount": 4}
+        info_no_match = {"eventName": "lakers", "ticketCount": 3}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_match_2, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_match_4, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_no_match, []) == False
+    
+    def test_zone_matching(self):
+        """Test zone name matching."""
+        query = {
+            "event_names": ["lakers"],
+            "zones": ["lower level", "floor"]
+        }
+        info_match = {"eventName": "lakers", "zone": "lower level"}
+        info_no_match = {"eventName": "lakers", "zone": "upper deck"}
+        
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_match, []) == True
+        assert StubHubInfoGathering._check_multi_candidate_query(query, info_no_match, []) == False
+
+
 # Run with: pytest navi_bench/stubhub/test_stubhub_unit.py -v
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
