@@ -174,34 +174,35 @@
         return null;
     };
 
+    // Extract city - LD+JSON FIRST, then pattern-based fallback
     const extractCity = (text) => {
+        // 1. FIRST: Try LD+JSON (most reliable - StubHub's own structured data)
+        try {
+            const ldEvents = getEventsFromLdJson();
+            if (ldEvents.length > 0 && ldEvents[0].city) {
+                return ldEvents[0].city;
+            }
+        } catch (e) {
+            // LD+JSON not available, try patterns
+        }
+
+        // 2. FALLBACK: Pattern-based extraction from text
         if (!text) return null;
-        const lowerText = text.toLowerCase();
 
         // Pattern 1: StubHub format "Venue | City, Country" or "Venue | City, State"
         // Example: "Anna Bhau Sathe Auditorium | Pune, India"
-        let match = text.match(/\|\s*([^,|]+),\s*(?:India|[A-Z]{2})/i);
+        let match = text.match(/\|\s*([^,|]+),\s*(?:[A-Za-z]+|[A-Z]{2})/i);
         if (match) {
             return match[1].trim().toLowerCase();
         }
 
-        // Pattern 2: Direct Indian city names in text
-        const indianCities = ['mumbai', 'pune', 'delhi', 'bangalore', 'bengaluru', 'hyderabad',
-            'chennai', 'kolkata', 'ahmedabad', 'jaipur', 'lucknow', 'mangalore',
-            'bhopal', 'nagpur', 'thane', 'navi mumbai', 'goa'];
-        for (const city of indianCities) {
-            if (lowerText.includes(city)) {
-                return city;
-            }
-        }
-
-        // Pattern 3: Common patterns: "City, State" or "City, State, Country"
-        match = text.match(/([A-Za-z\s]+),\s*([A-Z]{2})/);
+        // Pattern 2: "City, State" or "City, State, Country" format
+        match = text.match(/^([A-Za-z\s]+),\s*(?:[A-Z]{2}|[A-Za-z]+)/);
         if (match) {
             return match[1].trim().toLowerCase();
         }
 
-        // Pattern 4: After pipe but before comma
+        // Pattern 3: After pipe but before comma (venue | city format)
         match = text.match(/\|\s*([^,|]+)/);
         if (match) {
             return match[1].trim().toLowerCase();
@@ -373,58 +374,59 @@
         }
     };
 
-    // Enhanced detectEventCategory: LD+JSON → URL → Keywords (in order of reliability)
+    // ============================================================================
+    // CATEGORY DETECTION - 100% Dynamic, Zero Hardcoding
+    // Uses only StubHub's structured data (LD+JSON) and URL patterns
+    // ============================================================================
+
     const detectEventCategory = (text) => {
-        // 1. First, try to get from LD+JSON (most reliable - StubHub's own data)
-        const ldEvents = getEventsFromLdJson();
-        if (ldEvents.length > 0 && ldEvents[0].category) {
-            return ldEvents[0].category;
+        // 1. PRIMARY: LD+JSON Schema.org @type (most reliable - StubHub's own data)
+        // This works for ANY event type without hardcoding
+        try {
+            const ldEvents = getEventsFromLdJson();
+            if (ldEvents.length > 0 && ldEvents[0].category) {
+                return ldEvents[0].category;
+            }
+        } catch (e) {
+            // LD+JSON not available
         }
 
-        // 2. Second, try URL pattern (very reliable)
+        // 2. SECONDARY: URL pattern detection (very reliable)
+        // StubHub URLs contain category: /sports/, /concerts/, /theater/, etc.
         const urlCategory = getCategoryFromUrl();
         if (urlCategory) {
             return urlCategory;
         }
 
-        // 3. Fallback to keyword matching (least reliable but good for edge cases)
-        if (!text) return null;
-        const lowerText = text.toLowerCase();
+        // 3. TERTIARY: Page structure detection
+        // Look for category indicators in page metadata and navigation
+        try {
+            // Check breadcrumb navigation for category
+            const breadcrumbs = document.querySelectorAll('[data-testid*="breadcrumb"], nav a, .breadcrumb a');
+            for (const crumb of breadcrumbs) {
+                const href = crumb.href?.toLowerCase() || '';
+                const text = crumb.textContent?.toLowerCase() || '';
 
-        // Sports detection - use only generic sport keywords, NOT specific team names
-        const sportsKeywords = ['nba', 'nfl', 'mlb', 'nhl', 'mls', 'ncaa', 'basketball', 'football',
-            'baseball', 'hockey', 'soccer', 'tennis', 'golf', 'boxing', 'ufc', 'mma',
-            'wrestling', 'volleyball', 'cricket', 'rugby'];
-        for (const keyword of sportsKeywords) {
-            if (lowerText.includes(keyword)) return 'sports';
+                if (href.includes('/sports') || text.includes('sports')) return 'sports';
+                if (href.includes('/concerts') || text.includes('concerts')) return 'concerts';
+                if (href.includes('/theater') || text.includes('theater')) return 'theater';
+                if (href.includes('/comedy') || text.includes('comedy')) return 'comedy';
+                if (href.includes('/festivals') || text.includes('festivals')) return 'festivals';
+            }
+
+            // Check page meta tags
+            const metaCategory = document.querySelector('meta[property="og:type"], meta[name="category"]');
+            if (metaCategory) {
+                const content = metaCategory.content?.toLowerCase() || '';
+                if (content.includes('sport')) return 'sports';
+                if (content.includes('music') || content.includes('concert')) return 'concerts';
+                if (content.includes('theater') || content.includes('theatre')) return 'theater';
+            }
+        } catch (e) {
+            // DOM parsing failed
         }
 
-        // Concert detection - use only generic music keywords
-        const concertKeywords = ['concert', 'tour', 'live music', 'performance', 'world tour',
-            'farewell tour', 'reunion tour', 'album tour', 'live in concert'];
-        for (const keyword of concertKeywords) {
-            if (lowerText.includes(keyword)) return 'concerts';
-        }
-
-        // Theater detection - use only generic theater keywords
-        const theaterKeywords = ['broadway', 'theater', 'theatre', 'musical', 'play', 'opera',
-            'ballet', 'off-broadway', 'west end', 'stage production'];
-        for (const keyword of theaterKeywords) {
-            if (lowerText.includes(keyword)) return 'theater';
-        }
-
-        // Comedy detection
-        const comedyKeywords = ['comedy', 'standup', 'stand-up', 'comedian', 'comic', 'laugh'];
-        for (const keyword of comedyKeywords) {
-            if (lowerText.includes(keyword)) return 'comedy';
-        }
-
-        // Festivals detection
-        const festivalKeywords = ['festival', 'fest', 'coachella', 'lollapalooza', 'bonnaroo'];
-        for (const keyword of festivalKeywords) {
-            if (lowerText.includes(keyword)) return 'festivals';
-        }
-
+        // No category detected - return null (let the verifier handle it)
         return null;
     };
 
