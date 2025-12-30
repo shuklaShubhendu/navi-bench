@@ -219,32 +219,210 @@
         return null;
     };
 
+    // ============================================================================
+    // LD+JSON EXTRACTION - Primary source of structured data (most reliable)
+    // ============================================================================
+
+    const getEventsFromLdJson = () => {
+        try {
+            const scripts = Array.from(
+                document.querySelectorAll('script[type="application/ld+json"]')
+            );
+            const events = [];
+            let breadcrumbs = [];
+
+            for (const script of scripts) {
+                try {
+                    const data = JSON.parse(script.textContent);
+                    const graph = data["@graph"] ?? [data];
+
+                    for (const item of graph) {
+                        if (!item["@type"]) continue;
+
+                        // Handle @type as string or array
+                        const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
+
+                        // Extract breadcrumb data for navigation hierarchy
+                        if (types.includes("BreadcrumbList") && item.itemListElement) {
+                            breadcrumbs = item.itemListElement.map(el => ({
+                                position: el.position,
+                                name: el.name || el.item?.name,
+                                url: el.item?.["@id"] || el.item
+                            }));
+                            continue;
+                        }
+
+                        // Skip non-event types
+                        if (!types.some(t => t.toLowerCase().includes("event"))) continue;
+
+                        // Determine category from @type (SportsEvent, MusicEvent, etc.)
+                        let category = null;
+                        let eventType = null;
+                        for (const t of types) {
+                            const typeLower = t.toLowerCase();
+                            eventType = t;  // Store the exact type
+                            if (typeLower.includes('sports') || typeLower === 'sportsevent') category = 'sports';
+                            else if (typeLower.includes('music') || typeLower === 'musicevent' || typeLower.includes('concert')) category = 'concerts';
+                            else if (typeLower.includes('theater') || typeLower.includes('theatre') || typeLower === 'theaterevent') category = 'theater';
+                            else if (typeLower.includes('comedy') || typeLower === 'comedyevent') category = 'comedy';
+                            else if (typeLower.includes('festival') || typeLower === 'festival') category = 'festivals';
+                        }
+
+                        // Extract location/venue details
+                        const location = item.location || {};
+                        const address = location.address || {};
+
+                        // Extract performer info
+                        const performer = item.performer || {};
+                        const performerName = performer.name || (Array.isArray(performer) ? performer[0]?.name : null);
+                        const performerType = performer["@type"] || (Array.isArray(performer) ? performer[0]?.["@type"] : null);
+
+                        // Parse dates and times
+                        const startDate = item.startDate || null;
+                        const doorTime = item.doorTime || null;
+                        const endDate = item.endDate || null;
+
+                        // Extract offers/pricing
+                        const offers = item.offers || {};
+                        const lowPrice = offers.lowPrice ? parseFloat(offers.lowPrice) : null;
+                        const highPrice = offers.highPrice ? parseFloat(offers.highPrice) : null;
+                        const currency = offers.priceCurrency || "USD";
+                        const availability = offers.availability
+                            ? (offers.availability.includes("InStock") ? "available" : "sold_out")
+                            : "unknown";
+
+                        events.push({
+                            // Basic event info
+                            eventName: item.name?.toLowerCase() || null,
+                            eventType: eventType,
+                            category: category,
+                            description: item.description || null,
+
+                            // Dates and times
+                            eventDate: startDate?.split("T")[0] || null,
+                            startTime: startDate?.split("T")[1]?.substring(0, 5) || null,
+                            doorTime: doorTime?.split("T")[1]?.substring(0, 5) || null,
+                            endDate: endDate?.split("T")[0] || null,
+
+                            // Venue details
+                            venue: location.name || null,
+                            streetAddress: address.streetAddress || null,
+                            city: address.addressLocality?.toLowerCase() || null,
+                            state: address.addressRegion || null,
+                            postalCode: address.postalCode || null,
+                            country: address.addressCountry || null,
+
+                            // Performer info
+                            performer: performerName || null,
+                            performerType: performerType || null,
+
+                            // Pricing and availability
+                            lowPrice: lowPrice,
+                            highPrice: highPrice,
+                            currency: currency,
+                            availability: availability,
+                            priceRange: lowPrice ? { low: lowPrice, high: highPrice, currency: currency } : null,
+
+                            // Event status
+                            eventStatus: item.eventStatus || "EventScheduled",
+                            isRescheduled: item.eventStatus === "EventRescheduled",
+                            isCancelled: item.eventStatus === "EventCancelled",
+
+                            // Media
+                            image: item.image || null,
+
+                            // URLs
+                            url: item.url || null,
+
+                            // Metadata
+                            source: "ld+json",
+                            breadcrumbs: breadcrumbs
+                        });
+                    }
+                } catch (parseError) {
+                    // Skip malformed JSON
+                }
+            }
+            return events;
+        } catch (e) {
+            return [];
+        }
+    };
+
+    // Get category from URL path (secondary source - very reliable)
+    const getCategoryFromUrl = () => {
+        try {
+            const path = window.location.pathname.toLowerCase();
+            const url = window.location.href.toLowerCase();
+
+            if (path.includes('/sports') || url.includes('/sports')) return 'sports';
+            if (path.includes('/concerts') || url.includes('/concerts')) return 'concerts';
+            if (path.includes('/theater') || path.includes('/theatre')) return 'theater';
+            if (path.includes('/comedy')) return 'comedy';
+            if (path.includes('/festivals')) return 'festivals';
+
+            // Check for sport-specific paths
+            if (path.includes('/nba') || path.includes('/nfl') || path.includes('/mlb') ||
+                path.includes('/nhl') || path.includes('/mls') || path.includes('/ncaa')) {
+                return 'sports';
+            }
+
+            return null;
+        } catch (e) {
+            return null;
+        }
+    };
+
+    // Enhanced detectEventCategory: LD+JSON → URL → Keywords (in order of reliability)
     const detectEventCategory = (text) => {
+        // 1. First, try to get from LD+JSON (most reliable - StubHub's own data)
+        const ldEvents = getEventsFromLdJson();
+        if (ldEvents.length > 0 && ldEvents[0].category) {
+            return ldEvents[0].category;
+        }
+
+        // 2. Second, try URL pattern (very reliable)
+        const urlCategory = getCategoryFromUrl();
+        if (urlCategory) {
+            return urlCategory;
+        }
+
+        // 3. Fallback to keyword matching (least reliable but good for edge cases)
         if (!text) return null;
         const lowerText = text.toLowerCase();
 
-        // Sports detection
-        const sportsKeywords = ['nba', 'nfl', 'mlb', 'nhl', 'mls', 'ncaa', 'basketball', 'football', 'baseball', 'hockey', 'soccer'];
+        // Sports detection - use only generic sport keywords, NOT specific team names
+        const sportsKeywords = ['nba', 'nfl', 'mlb', 'nhl', 'mls', 'ncaa', 'basketball', 'football',
+            'baseball', 'hockey', 'soccer', 'tennis', 'golf', 'boxing', 'ufc', 'mma',
+            'wrestling', 'volleyball', 'cricket', 'rugby'];
         for (const keyword of sportsKeywords) {
             if (lowerText.includes(keyword)) return 'sports';
         }
 
-        // Concert detection
-        const concertKeywords = ['concert', 'tour', 'live', 'music', 'performance'];
+        // Concert detection - use only generic music keywords
+        const concertKeywords = ['concert', 'tour', 'live music', 'performance', 'world tour',
+            'farewell tour', 'reunion tour', 'album tour', 'live in concert'];
         for (const keyword of concertKeywords) {
             if (lowerText.includes(keyword)) return 'concerts';
         }
 
-        // Theater detection
-        const theaterKeywords = ['broadway', 'theater', 'theatre', 'musical', 'play', 'show'];
+        // Theater detection - use only generic theater keywords
+        const theaterKeywords = ['broadway', 'theater', 'theatre', 'musical', 'play', 'opera',
+            'ballet', 'off-broadway', 'west end', 'stage production'];
         for (const keyword of theaterKeywords) {
             if (lowerText.includes(keyword)) return 'theater';
         }
 
         // Comedy detection
-        const comedyKeywords = ['comedy', 'standup', 'stand-up', 'comedian'];
+        const comedyKeywords = ['comedy', 'standup', 'stand-up', 'comedian', 'comic', 'laugh'];
         for (const keyword of comedyKeywords) {
             if (lowerText.includes(keyword)) return 'comedy';
+        }
+
+        // Festivals detection
+        const festivalKeywords = ['festival', 'fest', 'coachella', 'lollapalooza', 'bonnaroo'];
+        for (const keyword of festivalKeywords) {
+            if (lowerText.includes(keyword)) return 'festivals';
         }
 
         return null;
@@ -805,11 +983,49 @@
         const isEventPage = currentUrl.includes('/event/');
         const isCategoryPage = currentUrl.includes('/category/') || currentUrl.includes('-tickets');
 
-        // For CATEGORY pages: Only extract the main artist/category, not individual events
-        // User must navigate to /event/ page to get credit for a specific event
+        // For CATEGORY pages: Use LD+JSON data if available, otherwise extract from URL
+        // User must navigate to /event/ page for full verification
         if (isCategoryPage && !isEventPage) {
-            // Extract main event name from URL slug
-            // URL: /zakir-khan-tickets/category/123 → "zakir khan"
+            // Try to get structured data from LD+JSON first (most reliable)
+            const ldEvents = getEventsFromLdJson();
+
+            if (ldEvents.length > 0) {
+                // Use LD+JSON data - much more reliable!
+                for (const ldEvent of ldEvents) {
+                    collected.push({
+                        url: ldEvent.url || url,
+                        eventName: ldEvent.eventName || mainEventName?.toLowerCase() || 'unknown',
+                        eventCategory: ldEvent.category || eventCategory,
+                        venue: ldEvent.venue,
+                        city: ldEvent.city,
+                        country: ldEvent.country,
+                        state: null,
+                        date: ldEvent.eventDate,
+                        dateRange: null,
+                        section: null,
+                        zone: null,
+                        row: null,
+                        ticketType: 'standard',
+                        deliveryType: 'electronic',
+                        isVIP: false,
+                        isAccessible: false,
+                        isParkingPass: false,
+                        aisleSeat: false,
+                        includesExtras: false,
+                        availabilityStatus: ldEvent.availability,
+                        priceRange: ldEvent.priceRange,
+                        info: 'ld+json',  // Indicates data source
+                        source: 'structured_data'
+                    });
+                }
+
+                // If we got LD+JSON data, return it
+                if (collected.length > 0) {
+                    return collected;
+                }
+            }
+
+            // Fallback: Extract from URL slug if no LD+JSON
             let mainArtist = null;
             const urlSlugMatch = currentUrl.match(/\/([a-z0-9-]+)-tickets/);
             if (urlSlugMatch) {
@@ -837,7 +1053,7 @@
                 aisleSeat: false,
                 includesExtras: false,
                 info: 'category_page',  // Different from 'category_event'
-                pageNote: 'User is on category page. Must click specific event to verify city.'
+                pageNote: 'User is on category page. No LD+JSON data found.'
             });
 
             // Return early - don't scrape individual event cards on category pages

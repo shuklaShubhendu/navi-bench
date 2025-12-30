@@ -96,7 +96,9 @@ class TestTaskGeneration:
         """Test random task generation creates valid config."""
         config = generate_task_config_random(
             event_type="sports",
-            city="Los Angeles"
+            city="Los Angeles",
+            timezone="America/Los_Angeles",
+            event_name="Lakers"
         )
         
         assert config.url == "https://www.stubhub.com"

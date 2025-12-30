@@ -1,322 +1,347 @@
 #!/usr/bin/env python
 """
-StubHub Automated Demo Agent - Zakir Khan Mumbai/Pune Test
-Tests the verifier behavior when no tickets are found.
+StubHub Automated Verification Agent
 
-Run with: python auto_demo_stubhub.py
+Automated browser agent that demonstrates the StubHub verification system
+without manual intervention. Performs searches, navigates to events, and
+validates the verification process end-to-end.
+
+Features:
+- Fully automated search and navigation
+- Multi-tab support with real-time tracking
+- Stealth browser configuration
+- Comprehensive result reporting
+
+Usage:
+    python auto_demo_stubhub.py
 """
 
 import asyncio
-from playwright.async_api import async_playwright
+import sys
+from dataclasses import dataclass, field
+from typing import Optional
 
-# Import the StubHub verifier
-try:
-    from navi_bench.stubhub.stubhub_info_gathering import (
-        StubHubInfoGathering,
-        generate_task_config_deterministic,
+from playwright.async_api import Page, BrowserContext, async_playwright
+from loguru import logger
+
+# Import verifier
+from navi_bench.stubhub.stubhub_info_gathering import (
+    StubHubInfoGathering,
+    generate_task_config_deterministic,
+)
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+@dataclass
+class AutomationConfig:
+    """Configuration for automated verification runs."""
+    search_term: str = "NBA"
+    max_navigation_steps: int = 5
+    wait_between_actions_ms: int = 2000
+    screenshot_on_complete: bool = False
+    headless: bool = False
+    
+
+@dataclass
+class BrowserConfig:
+    """Browser launch configuration."""
+    viewport_width: int = 1366
+    viewport_height: int = 768
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
-    from navi_bench.base import instantiate
-except ImportError as e:
-    print(f"[ERROR] Could not import navi_bench modules: {e}")
-    print("Make sure you're running from the navi-bench directory and it's installed.")
-    print("Run: python -m pip install -e .")
-    exit(1)
+    locale: str = "en-US"
+    timezone: str = "America/New_York"
+    launch_args: list = field(default_factory=lambda: [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--no-sandbox",
+    ])
 
 
-async def run_zakir_khan_demo():
-    """Search for Zakir Khan in Mumbai/Pune to test no-ticket scenarios"""
-    
-    print("\n" + "=" * 80)
-    print("STUBHUB DEMO: ZAKIR KHAN MUMBAI/PUNE TEST")
-    print("=" * 80)
-    print()
-    print("This test searches for Zakir Khan tickets in Mumbai/Pune to verify")
-    print("how the system handles scenarios where:")
-    print("  - No tickets are available")
-    print("  - Event is sold out")
-    print("  - No events found in that region")
-    print()
-    
-    # Task Definition
-    task = (
-        "Search for Zakir Khan comedy show tickets in Mumbai or Pune, India. "
-        "Find any Zakir Khan stand-up event available in these cities."
-    )
-    
-    # Expected search criteria - Mumbai/Pune specific
-    # NOTE: require_available=False means agent gets credit even for sold-out events
-    queries = [[{
-        "event_names": ["zakir khan", "zakir", "haq se single", "kaksha gyarvi", "tathastu"],
-        "event_categories": ["comedy", "standup", "stand-up"],
-        # Mumbai/Pune specific
-        "cities": ["mumbai", "pune", "navi mumbai", "thane"],
-        "require_available": False  # Credit even if sold out!
-    }]]
-    
-    # Create task config
-    try:
-        task_config = generate_task_config_deterministic(
-            mode="any",
-            task=task,
-            queries=queries,
-            location="Mumbai, Maharashtra, India",
-            timezone="Asia/Kolkata",
-            url="https://www.stubhub.com"
-        )
-        evaluator = instantiate(task_config.eval_config)
-    except Exception as e:
-        print(f"[ERROR] Creating task config: {e}")
-        return
+# =============================================================================
+# NAVIGATION TRACKER
+# =============================================================================
 
-    print(f"TASK: {task}")
-    print("=" * 80)
-    print()
-
-    async with async_playwright() as p:
+class NavigationTracker:
+    """Tracks navigation events and updates evaluator in real-time."""
+    
+    def __init__(self, evaluator: StubHubInfoGathering):
+        self.evaluator = evaluator
+        self.navigation_count = 0
+        self.pages_tracked: set[int] = set()
+        self._lock = asyncio.Lock()
+    
+    async def attach_to_page(self, page: Page) -> None:
+        """Attach tracking to a page."""
+        page_id = id(page)
+        if page_id in self.pages_tracked:
+            return
+        self.pages_tracked.add(page_id)
+        
+        async def on_navigate(frame):
+            if frame != page.main_frame:
+                return
+            async with self._lock:
+                self.navigation_count += 1
+                logger.info(f"[NAV #{self.navigation_count}] {page.url[:70]}...")
+                try:
+                    await self.evaluator.update(page=page)
+                except Exception as e:
+                    logger.debug(f"Update error: {e}")
+        
+        page.on("framenavigated", lambda f: asyncio.create_task(on_navigate(f)))
+    
+    async def handle_new_page(self, new_page: Page) -> None:
+        """Handle new tab/popup."""
         try:
-            # Launch browser
-            print("[1/7] Launching browser...")
-            browser = await p.chromium.launch(
-                headless=False,  # Show the browser
-                args=["--disable-blink-features=AutomationControlled"]
-            )
-            
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                locale="en-IN",  # India locale
-                timezone_id="Asia/Kolkata",
-            )
-            
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """)
-            
-            page = await context.new_page()
-            
-            # Step 1: Navigate to StubHub
-            print("[2/7] Opening StubHub.com...")
-            await page.goto("https://www.stubhub.com", timeout=60_000, wait_until="load")
-            await page.wait_for_timeout(3000)
-            print(f"       Current URL: {page.url}")
-            
-            # Step 2: Search for Zakir Khan Mumbai
-            print("[3/7] Searching for 'Zakir Khan Mumbai'...")
-            
+            await new_page.wait_for_load_state("domcontentloaded", timeout=10000)
+            logger.info(f"[NEW TAB] {new_page.url[:60]}...")
+            await self.attach_to_page(new_page)
+            await self.evaluator.update(page=new_page)
+        except Exception as e:
+            logger.debug(f"New tab error: {e}")
+    
+    def attach_to_context(self, context: BrowserContext) -> None:
+        """Attach to browser context for new page detection."""
+        context.on("page", lambda p: asyncio.create_task(self.handle_new_page(p)))
+
+
+# =============================================================================
+# AUTOMATED AGENT
+# =============================================================================
+
+class AutomatedAgent:
+    """Automated agent that navigates StubHub and triggers verification."""
+    
+    def __init__(self, page: Page, config: AutomationConfig):
+        self.page = page
+        self.config = config
+        self.actions_taken = []
+    
+    async def _wait(self, multiplier: float = 1.0) -> None:
+        """Wait between actions."""
+        await asyncio.sleep(self.config.wait_between_actions_ms * multiplier / 1000)
+    
+    async def search_for_event(self, search_term: str) -> bool:
+        """Search for an event on StubHub."""
+        logger.info(f"Searching for: {search_term}")
+        
+        try:
+            # Look for search input
             search_selectors = [
-                'input[type="search"]',
                 'input[placeholder*="Search"]',
+                'input[type="search"]',
+                'input[data-testid*="search"]',
                 'input[aria-label*="Search"]',
-                'input[name="q"]',
                 '#search-input',
             ]
             
-            search_box = None
             for selector in search_selectors:
                 try:
-                    search_box = await page.wait_for_selector(selector, timeout=5000)
+                    search_box = await self.page.wait_for_selector(selector, timeout=3000)
                     if search_box:
-                        print(f"       Found search box: {selector}")
-                        break
-                except:
+                        await search_box.click()
+                        await self._wait(0.5)
+                        await search_box.fill(search_term)
+                        await self._wait(0.5)
+                        await self.page.keyboard.press("Enter")
+                        self.actions_taken.append(f"Searched: {search_term}")
+                        logger.info("Search submitted")
+                        return True
+                except Exception:
                     continue
             
-            search_query = "Zakir Khan Mumbai"
-            
-            if search_box:
-                await search_box.click()
-                await page.wait_for_timeout(500)
-                await search_box.fill(search_query)
-                await page.wait_for_timeout(500)
-                await search_box.press("Enter")
-                await page.wait_for_timeout(5000)
-                print(f"       Search submitted. URL: {page.url[:80]}...")
-            else:
-                print("[WARN] Could not find search box. Trying direct URL...")
-                await page.goto("https://www.stubhub.com/secure/Search?q=Zakir+Khan+Mumbai", timeout=60_000)
-                await page.wait_for_timeout(5000)
-            
-            # Step 3: First verification on search results page
-            print("[4/7] Verifying search results page...")
-            print("-" * 40)
-            
-            await evaluator.reset()
-            await evaluator.update(page=page)
-            search_result = await evaluator.compute()
-            
-            print(f"       Search page score: {search_result.score:.0%}")
-            print(f"       Queries matched: {search_result.n_covered}/{search_result.n_queries}")
-            print()
-            
-            # Step 4: Try to click on a Zakir Khan event
-            print("[5/7] Looking for Zakir Khan event links...")
-            
-            event_selectors = [
-                'a[href*="zakir"][href*="event"]',
-                'a[href*="zakir-khan"]',
-                'a[href*="/event/"]',
-            ]
-            
-            event_clicked = False
-            for selector in event_selectors:
-                try:
-                    links = await page.query_selector_all(selector)
-                    for link in links:
-                        href = await link.get_attribute("href") or ""
-                        text = await link.text_content() or ""
-                        if "zakir" in href.lower() or "zakir" in text.lower():
-                            print(f"       Found event: {text[:50]}...")
-                            print(f"       URL: {href[:60]}...")
-                            await link.click()
-                            event_clicked = True
-                            await page.wait_for_timeout(5000)
-                            break
-                    if event_clicked:
-                        break
-                except:
-                    continue
-            
-            if not event_clicked:
-                print("[INFO] No Zakir Khan events found directly.")
-                print("       This is expected if there are no Mumbai/Pune events.")
-            
-            print(f"       Current URL: {page.url}")
-            
-            # Step 5: Verify the final page
-            print("[6/7] Running final verification...")
-            print("-" * 40)
-            
-            await evaluator.reset()
-            await evaluator.update(page=page)
-            final_result = await evaluator.compute()
-            
-            # Step 6: Display comprehensive results
-            print()
-            print("=" * 80)
-            print("VERIFICATION RESULT")
-            print("=" * 80)
-            print()
-            print(f"  Final URL: {page.url}")
-            print()
-            print(f"  Score: {final_result.score:.0%}")
-            print(f"  Queries Matched: {final_result.n_covered}/{final_result.n_queries}")
-            print()
-            
-            if final_result.score == 1.0:
-                print("[PASS] SUCCESS! Found a valid Zakir Khan event in Mumbai/Pune!")
-                print()
-                print("  What was verified:")
-                print("    ✓ Event name contains 'Zakir Khan'")
-                print("    ✓ Category is Comedy/Standup")
-                print("    ✓ City is Mumbai or Pune")
-                print("    ✓ (Event counts even if sold out)")
-            elif final_result.score > 0:
-                print("[PARTIAL] Found partial match for Zakir Khan.")
-                print()
-                print("  The agent found some matching content but not all criteria.")
-            else:
-                print("[INFO] No Zakir Khan events found in Mumbai/Pune.")
-                print()
-                print("  This is the expected result if:")
-                print("    - No Zakir Khan shows are listed in these cities")
-                print("    - All events are in other locations")
-                print("    - StubHub doesn't have listings for this artist/region")
-                print()
-                print("  KEY INSIGHT: The verifier correctly reports 0% when no")
-                print("  matching events exist. This is NOT a bug - it's the")
-                print("  expected behavior for the 'no tickets available' case.")
-                
-            print()
-            print("=" * 80)
-            print("PAGE ANALYSIS")
-            print("=" * 80)
-            
-            # Show what the scraper found
-            page_title = await page.title()
-            print(f"  Page Title: {page_title}")
-            
-            # Check for sold out / no results indicators
-            page_text = await page.evaluate("document.body?.innerText || ''")
-            page_text_lower = page_text.lower()
-            
-            if "sold out" in page_text_lower:
-                print("  Status: SOLD OUT detected on page")
-            elif "no results" in page_text_lower or "no tickets" in page_text_lower:
-                print("  Status: NO RESULTS detected on page")
-            elif "zakir" in page_text_lower:
-                print("  Status: Zakir Khan content detected on page")
-            else:
-                print("  Status: No specific status indicators found")
-            
-            print("=" * 80)
-            
-            # Keep browser open for viewing
-            print()
-            print("[7/7] Demo complete! Browser will close in 10 seconds...")
-            print("      (You can examine the page)")
-            await page.wait_for_timeout(10000)
-            
-            await context.close()
-            await browser.close()
+            logger.warning("Could not find search box")
+            return False
             
         except Exception as e:
-            print(f"\n[ERROR] {e}")
-            import traceback
-            traceback.print_exc()
-
-
-async def run_pune_search():
-    """Also try Pune specifically"""
-    print("\n" + "=" * 80)
-    print("ADDITIONAL TEST: Searching Pune specifically...")
-    print("=" * 80)
+            logger.error(f"Search failed: {e}")
+            return False
     
-    # This is a simpler version just to check Pune
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context(viewport={"width": 1280, "height": 720})
-        page = await context.new_page()
-        
-        await page.goto("https://www.stubhub.com")
-        await page.wait_for_timeout(2000)
+    async def click_first_event(self) -> bool:
+        """Click on the first event in search results."""
+        logger.info("Looking for events to click...")
         
         try:
-            search = await page.wait_for_selector('input[type="search"], input[placeholder*="Search"]', timeout=10000)
-            if search:
-                await search.fill("Zakir Khan Pune")
-                await search.press("Enter")
-                await page.wait_for_timeout(5000)
-                print(f"  Pune search URL: {page.url}")
-        except:
-            pass
+            await self._wait(2)  # Wait for results
+            
+            # Event link selectors
+            event_selectors = [
+                'a[href*="/event/"]',
+                '[data-testid*="event"] a',
+                '.event-listing a',
+                '[class*="EventRow"] a',
+            ]
+            
+            for selector in event_selectors:
+                try:
+                    events = await self.page.query_selector_all(selector)
+                    if events and len(events) > 0:
+                        await events[0].click()
+                        self.actions_taken.append("Clicked first event")
+                        logger.info("Clicked on event")
+                        return True
+                except Exception:
+                    continue
+            
+            logger.warning("No events found to click")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Click failed: {e}")
+            return False
+    
+    async def run_automation(self) -> list:
+        """Run the automated navigation sequence."""
+        steps = [
+            ("Search for events", lambda: self.search_for_event(self.config.search_term)),
+            ("Wait for results", lambda: self._wait(2)),
+            ("Click first event", self.click_first_event),
+            ("Wait for event page", lambda: self._wait(2)),
+        ]
         
-        await page.wait_for_timeout(5000)
+        for step_name, step_func in steps:
+            logger.info(f"Step: {step_name}")
+            try:
+                result = await step_func()
+                if result is False:
+                    logger.warning(f"Step '{step_name}' did not complete as expected")
+            except Exception as e:
+                logger.error(f"Step '{step_name}' failed: {e}")
+        
+        return self.actions_taken
+
+
+# =============================================================================
+# MAIN RUNNER
+# =============================================================================
+
+async def run_automated_demo():
+    """Run the automated StubHub demonstration."""
+    
+    print("\n" + "=" * 80)
+    print("STUBHUB AUTOMATED VERIFICATION DEMO")
+    print("=" * 80)
+    print("\nThis demo automatically:")
+    print("  1. Opens StubHub")
+    print("  2. Searches for events")
+    print("  3. Navigates to event pages")
+    print("  4. Verifies the page content")
+    print("\n" + "=" * 80)
+    
+    # Configuration
+    auto_config = AutomationConfig(
+        search_term="NBA",
+        wait_between_actions_ms=2000,
+    )
+    browser_config = BrowserConfig()
+    
+    # Create evaluator
+    queries = [[{
+        "event_names": ["nba", "basketball"],
+        "event_categories": ["sports"],
+        "require_available": False,
+    }]]
+    
+    evaluator = StubHubInfoGathering(queries=queries)
+    tracker = NavigationTracker(evaluator)
+    
+    print(f"\nSearch Term: {auto_config.search_term}")
+    print("=" * 80)
+    
+    async with async_playwright() as p:
+        # Launch browser
+        logger.info("Launching browser...")
+        browser = await p.chromium.launch(
+            headless=auto_config.headless,
+            args=browser_config.launch_args,
+        )
+        
+        context = await browser.new_context(
+            viewport={"width": browser_config.viewport_width, "height": browser_config.viewport_height},
+            user_agent=browser_config.user_agent,
+            locale=browser_config.locale,
+            timezone_id=browser_config.timezone,
+        )
+        
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+        """)
+        
+        page = await context.new_page()
+        
+        # Attach tracking
+        tracker.attach_to_context(context)
+        await tracker.attach_to_page(page)
+        
+        # Navigate to StubHub
+        logger.info("Opening StubHub...")
+        await page.goto("https://www.stubhub.com", timeout=60000, wait_until="domcontentloaded")
+        
+        await evaluator.reset()
+        await evaluator.update(page=page)
+        
+        # Run automation
+        logger.info("Starting automated navigation...")
+        agent = AutomatedAgent(page, auto_config)
+        actions = await agent.run_automation()
+        
+        # Final evaluation
+        logger.info("Running final evaluation...")
+        await evaluator.update(page=page)
+        result = await evaluator.compute()
+        
+        # Close browser
+        await context.close()
         await browser.close()
+    
+    # Print results
+    print("\n" + "=" * 80)
+    print("VERIFICATION RESULT")
+    print("=" * 80)
+    
+    score_pct = result.score * 100
+    status = "✅ PASS" if result.score >= 1.0 else "⚠️ PARTIAL" if result.score > 0 else "❌ FAIL"
+    
+    print(f"Status:           {status}")
+    print(f"Score:            {score_pct:.1f}%")
+    print(f"Queries Matched:  {result.n_covered}/{result.n_queries}")
+    print(f"Pages Navigated:  {tracker.navigation_count}")
+    print(f"Actions Taken:    {len(actions)}")
+    print("-" * 80)
+    
+    for i, covered in enumerate(result.is_query_covered):
+        icon = "✓" if covered else "✗"
+        print(f"  Query {i+1}: [{icon}] {'Matched' if covered else 'Not matched'}")
+    
+    print("=" * 80)
+    print("\nAutomation complete!")
+    
+    return result
+
+
+async def main():
+    """Main entry point."""
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+        level="INFO"
+    )
+    
+    try:
+        await run_automated_demo()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+    except Exception as e:
+        logger.exception(f"Error: {e}")
 
 
 if __name__ == "__main__":
-    print()
-    print("=" * 80)
-    print("STUBHUB VERIFIER TEST: ZAKIR KHAN MUMBAI/PUNE")
-    print("=" * 80)
-    print()
-    print("This test demonstrates how the verifier handles:")
-    print("  1. Events that exist but are sold out")
-    print("  2. No events found for the search")
-    print("  3. Events in different cities than requested")
-    print()
-    print("Watch the browser - the agent will search automatically!")
-    print()
-    
-    try:
-        asyncio.run(run_zakir_khan_demo())
-    except KeyboardInterrupt:
-        print("\n\n[CANCELLED] Demo cancelled by user.")
-    except Exception as e:
-        print(f"\n\n[ERROR] {e}")
-        import traceback
-        traceback.print_exc()
-    
-    print("\nDemo complete!")
+    asyncio.run(main())

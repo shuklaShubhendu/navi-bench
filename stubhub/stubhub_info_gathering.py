@@ -227,7 +227,11 @@ class InfoDict(TypedDict, total=False):
     
     # Availability Status (detected from page content)
     availabilityStatus: str  # available, sold_out, presale, waitlist, limited, cancelled, rescheduled
-
+    
+    # LD+JSON Structured Data Fields
+    source: str  # "ld+json", "dom", "structured_data", "category_page"
+    country: str  # Country from LD+JSON location data
+    priceRange: dict  # {low, high, currency} from LD+JSON offers
 
 
 class FinalResult(BaseModel):
@@ -653,56 +657,9 @@ class StubHubInfoGathering(BaseMetric):
         return True
 
 
-# Event categories and metadata
-EVENT_CATEGORIES = {
-    "sports": {
-        "nba": ["Lakers", "Warriors", "Clippers", "Celtics", "Heat"],
-        "nfl": ["49ers", "Cowboys", "Patriots", "Chiefs", "Packers"],
-        "mlb": ["Dodgers", "Yankees", "Red Sox", "Giants", "Cubs"],
-        "nhl": ["Kings", "Rangers", "Bruins", "Blackhawks", "Maple Leafs"],
-    },
-    "concert": {
-        "pop": ["Taylor Swift", "Ed Sheeran", "Ariana Grande"],
-        "rock": ["Foo Fighters", "Metallica", "Green Day"],
-        "hip-hop": ["Drake", "Kendrick Lamar", "Travis Scott"],
-    },
-    "theater": {
-        "broadway": ["Hamilton", "Wicked", "The Lion King"],
-        "comedy": ["Kevin Hart", "Dave Chappelle", "Trevor Noah"],
-    },
-}
-
-# City to venue mappings
-CITY_VENUES = {
-    "Los Angeles": {
-        "location": "Los Angeles, CA, United States",
-        "timezone": "America/Los_Angeles",
-        "venues": {
-            "Crypto.com Arena": ["Lakers", "Clippers", "Kings"],
-            "SoFi Stadium": ["Rams", "Chargers"],
-            "Dodger Stadium": ["Dodgers"],
-            "Hollywood Bowl": ["concerts"],
-        }
-    },
-    "New York": {
-        "location": "New York, NY, United States",
-        "timezone": "America/New_York",
-        "venues": {
-            "Madison Square Garden": ["Knicks", "Rangers"],
-            "Yankee Stadium": ["Yankees"],
-            "Barclays Center": ["Nets"],
-        }
-    },
-    "San Francisco": {
-        "location": "San Francisco, CA, United States",
-        "timezone": "America/Los_Angeles",
-        "venues": {
-            "Chase Center": ["Warriors"],
-            "Oracle Park": ["Giants"],
-            "Levi's Stadium": ["49ers"],
-        }
-    },
-}
+# NOTE: Event categories and city/venue mappings are now dynamically extracted
+# from StubHub's LD+JSON structured data in the JavaScript scraper.
+# This eliminates the need for hardcoded mappings.
 
 
 def get_next_weekend_dates() -> list[str]:
@@ -742,30 +699,29 @@ def get_upcoming_weekday(weekday_name: str) -> str:
 def generate_task_config_random(
     event_type: Literal["sports", "concert", "theater"],
     city: str,
+    timezone: str,
+    event_name: str | None = None,
     seed: int | None = None,
     url: str = "https://www.stubhub.com",
 ) -> BaseTaskConfig:
-    """Generate random task configuration for StubHub events."""
+    """Generate random task configuration for StubHub events.
+    
+    Args:
+        event_type: Type of event (sports, concert, theater)
+        city: City name for the event
+        timezone: IANA timezone string (e.g., 'America/Los_Angeles', 'Asia/Kolkata')
+        event_name: Optional specific event name. If None, uses generic category.
+        seed: Random seed for reproducibility
+        url: StubHub URL
+    """
     if seed is not None:
         random.seed(seed)
 
-    # Get city metadata
-    city_meta = CITY_VENUES.get(city, {
-        "location": f"{city}, United States",
-        "timezone": "America/Los_Angeles",
-        "venues": {}
-    })
+    location = f"{city}"
 
-    # Select random event based on type
-    if event_type == "sports":
-        sport_type = random.choice(list(EVENT_CATEGORIES["sports"].keys()))
-        event_name = random.choice(EVENT_CATEGORIES["sports"][sport_type])
-    elif event_type == "concert":
-        genre = random.choice(list(EVENT_CATEGORIES["concert"].keys()))
-        event_name = random.choice(EVENT_CATEGORIES["concert"][genre])
-    else:  # theater
-        category = random.choice(list(EVENT_CATEGORIES["theater"].keys()))
-        event_name = random.choice(EVENT_CATEGORIES["theater"][category])
+    # Use provided event_name or generic category
+    if not event_name:
+        event_name = f"{event_type} event"
 
     # Generate random date (next 30 days)
     days_ahead = random.randint(1, 30)
@@ -785,8 +741,8 @@ def generate_task_config_random(
     )
 
     user_metadata = UserMetadata(
-        location=city_meta["location"],
-        timezone=city_meta["timezone"],
+        location=location,
+        timezone=timezone,
         timestamp=int(datetime.now().timestamp()),
     )
 
